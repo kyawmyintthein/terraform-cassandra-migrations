@@ -7,16 +7,18 @@ terraform {
 }
 
 provider "cassandra" {
-  hosts            = ["127.0.0.1"]
-  port             = 9042
-  local_datacenter = "dc1"
+  hosts                   = ["127.0.0.1"]
+  port                    = 9042
+  local_datacenter        = "dc1"
+  migration_lock_keyspace = "terraform_schema_migration"
+  migration_lock_table    = "schema_migration_locks"
 }
 
 resource "cassandra_user_level_table" "events" {
   keyspace                = "app"
   table_name              = "events"
   if_not_exists           = true
-  required_system_profile = "default_twcs"
+  required_system_profile = "write_heavy"
 
   columns = [
     {

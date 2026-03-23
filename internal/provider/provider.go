@@ -25,13 +25,15 @@ func New() provider.Provider {
 type CassandraProvider struct{}
 
 type CassandraProviderModel struct {
-	Hosts           types.List   `tfsdk:"hosts"`
-	Port            types.Int64  `tfsdk:"port"`
-	LocalDatacenter types.String `tfsdk:"local_datacenter"`
-	Username        types.String `tfsdk:"username"`
-	Password        types.String `tfsdk:"password"`
-	Consistency     types.String `tfsdk:"consistency"`
-	TimeoutSeconds  types.Int64  `tfsdk:"timeout_seconds"`
+	Hosts                 types.List   `tfsdk:"hosts"`
+	Port                  types.Int64  `tfsdk:"port"`
+	LocalDatacenter       types.String `tfsdk:"local_datacenter"`
+	Username              types.String `tfsdk:"username"`
+	Password              types.String `tfsdk:"password"`
+	Consistency           types.String `tfsdk:"consistency"`
+	TimeoutSeconds        types.Int64  `tfsdk:"timeout_seconds"`
+	MigrationLockKeyspace types.String `tfsdk:"migration_lock_keyspace"`
+	MigrationLockTable    types.String `tfsdk:"migration_lock_table"`
 }
 
 func (p *CassandraProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -72,6 +74,14 @@ func (p *CassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 				Optional:            true,
 				MarkdownDescription: "Query timeout in seconds. Defaults to 30 or CASSANDRA_TIMEOUT_SECONDS when set.",
 			},
+			"migration_lock_keyspace": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Platform-managed keyspace that stores schema migration locks. Defaults to terraform_schema_migration.",
+			},
+			"migration_lock_table": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Platform-managed table that stores schema migration locks. Defaults to schema_migration_locks.",
+			},
 		},
 	}
 }
@@ -89,7 +99,9 @@ func (p *CassandraProvider) Configure(ctx context.Context, req provider.Configur
 		config.Username.IsUnknown() ||
 		config.Password.IsUnknown() ||
 		config.Consistency.IsUnknown() ||
-		config.TimeoutSeconds.IsUnknown() {
+		config.TimeoutSeconds.IsUnknown() ||
+		config.MigrationLockKeyspace.IsUnknown() ||
+		config.MigrationLockTable.IsUnknown() {
 		return
 	}
 
@@ -117,13 +129,15 @@ func (p *CassandraProvider) Configure(ctx context.Context, req provider.Configur
 	}
 
 	clientConfig := CassandraClientConfig{
-		Hosts:           hosts,
-		Port:            readIntConfig(config.Port, "CASSANDRA_PORT", 9042, &resp.Diagnostics),
-		LocalDatacenter: localDatacenter,
-		Username:        readStringConfig(config.Username, "CASSANDRA_USERNAME"),
-		Password:        readStringConfig(config.Password, "CASSANDRA_PASSWORD"),
-		Consistency:     readStringConfigWithDefault(config.Consistency, "CASSANDRA_CONSISTENCY", "QUORUM"),
-		TimeoutSeconds:  readIntConfig(config.TimeoutSeconds, "CASSANDRA_TIMEOUT_SECONDS", 30, &resp.Diagnostics),
+		Hosts:                 hosts,
+		Port:                  readIntConfig(config.Port, "CASSANDRA_PORT", 9042, &resp.Diagnostics),
+		LocalDatacenter:       localDatacenter,
+		Username:              readStringConfig(config.Username, "CASSANDRA_USERNAME"),
+		Password:              readStringConfig(config.Password, "CASSANDRA_PASSWORD"),
+		Consistency:           readStringConfigWithDefault(config.Consistency, "CASSANDRA_CONSISTENCY", "QUORUM"),
+		TimeoutSeconds:        readIntConfig(config.TimeoutSeconds, "CASSANDRA_TIMEOUT_SECONDS", 30, &resp.Diagnostics),
+		MigrationLockKeyspace: readStringConfigWithDefault(config.MigrationLockKeyspace, "CASSANDRA_MIGRATION_LOCK_KEYSPACE", profileRegistryKeyspace),
+		MigrationLockTable:    readStringConfigWithDefault(config.MigrationLockTable, "CASSANDRA_MIGRATION_LOCK_TABLE", schemaLockTable),
 	}
 	if resp.Diagnostics.HasError() {
 		return
@@ -147,6 +161,7 @@ func (p *CassandraProvider) Resources(_ context.Context) []func() resource.Resou
 		NewUserLevelTableResource,
 		NewSystemLevelTableSettingsResource,
 		NewSystemLevelProfileResource,
+		NewSystemLevelMigrationLockStoreResource,
 	}
 }
 

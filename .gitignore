@@ -38,3 +38,4 @@ terraform.rc
 
 # Local git worktrees for parallel tasks
 .worktree/
+.gocache/

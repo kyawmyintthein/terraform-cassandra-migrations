@@ -16,7 +16,7 @@ resource "cassandra_user_level_table" "events" {
   keyspace                = "app"
   table_name              = "events"
   if_not_exists           = true
-  required_system_profile = cassandra_system_level_profile.default_twcs.name
+  required_system_profile = cassandra_system_level_profile.write_heavy.name
 
   columns = [
     {
@@ -54,8 +54,30 @@ resource "cassandra_user_level_table" "events" {
   ]
 }
 
-resource "cassandra_system_level_profile" "default_twcs" {
-  name = "default_twcs"
+resource "cassandra_system_level_profile" "default" {
+  name    = "default"
+  comment = "Balanced baseline for general-purpose tables"
+
+  compaction = {
+    class = "org.apache.cassandra.db.compaction.UnifiedCompactionStrategy"
+  }
+
+  gc_grace_seconds = 86400
+}
+
+resource "cassandra_system_level_profile" "read_heavy" {
+  name    = "read_heavy"
+  comment = "Read-optimized baseline for latency-sensitive workloads"
+
+  compaction = {
+    class = "org.apache.cassandra.db.compaction.LeveledCompactionStrategy"
+  }
+
+  gc_grace_seconds = 86400
+}
+
+resource "cassandra_system_level_profile" "write_heavy" {
+  name = "write_heavy"
 
   compaction = {
     class = "org.apache.cassandra.db.compaction.TimeWindowCompactionStrategy"

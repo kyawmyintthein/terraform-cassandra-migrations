@@ -48,6 +48,28 @@ When you use separate Terraform states:
 
 The provider keeps responsibilities separate, but app teams can now require a DB-admin profile up front so production tables are not created without essential compaction and operational defaults.
 
+## Migration coordination
+
+User-level schema migrations are serialized per Cassandra table through a platform-managed lock table. The provider acquires the lock with a Cassandra lightweight transaction, renews the lease while the migration is running, and waits for schema agreement after each schema-changing statement before continuing.
+
+Provision the lock store first with the system-level resource:
+
+```hcl
+resource "cassandra_system_level_migration_lock_store" "schema" {
+  keyspace   = "terraform_schema_migration"
+  table_name = "schema_migration_locks"
+
+  replication = {
+    class = "NetworkTopologyStrategy"
+    dc1   = "3"
+  }
+}
+```
+
+The `keyspace` and `table_name` must match the provider's `migration_lock_keyspace` and `migration_lock_table` settings used by user-level applies. User-level resources will not auto-create this store; they fail with a clear error until the platform-managed lock store exists.
+
+This reduces drift when separate Terraform runs or pipelines try to mutate the same table concurrently. It is still best practice to serialize Terraform applies per environment in CI/CD so Cassandra locking remains a safety net rather than the only coordination layer.
+
 ## Provider
 
 ```hcl
@@ -60,9 +82,11 @@ terraform {
 }
 
 provider "cassandra" {
-  hosts            = ["127.0.0.1"]
-  port             = 9042
-  local_datacenter = "dc1"
+  hosts                   = ["127.0.0.1"]
+  port                    = 9042
+  local_datacenter        = "dc1"
+  migration_lock_keyspace = "terraform_schema_migration"
+  migration_lock_table    = "schema_migration_locks"
 }
 ```
 
@@ -75,6 +99,8 @@ The provider also supports environment-variable configuration, which is useful w
 - `CASSANDRA_PASSWORD`
 - `CASSANDRA_CONSISTENCY`
 - `CASSANDRA_TIMEOUT_SECONDS`
+- `CASSANDRA_MIGRATION_LOCK_KEYSPACE`
+- `CASSANDRA_MIGRATION_LOCK_TABLE`
 
 Example:
 
@@ -160,11 +186,33 @@ provider "cassandra" {
 
 This pattern also works with any other secret source that can expose credentials as Terraform expressions or environment variables.
 
-## Admin-managed profile
+## Admin-managed profiles
 
 ```hcl
-resource "cassandra_system_level_profile" "default_twcs" {
-  name = "default_twcs"
+resource "cassandra_system_level_profile" "default" {
+  name    = "default"
+  comment = "Balanced baseline for general-purpose tables"
+
+  compaction = {
+    class = "org.apache.cassandra.db.compaction.UnifiedCompactionStrategy"
+  }
+
+  gc_grace_seconds = 86400
+}
+
+resource "cassandra_system_level_profile" "read_heavy" {
+  name    = "read_heavy"
+  comment = "Read-optimized baseline for latency-sensitive workloads"
+
+  compaction = {
+    class = "org.apache.cassandra.db.compaction.LeveledCompactionStrategy"
+  }
+
+  gc_grace_seconds = 86400
+}
+
+resource "cassandra_system_level_profile" "write_heavy" {
+  name = "write_heavy"
 
   compaction = {
     class = "org.apache.cassandra.db.compaction.TimeWindowCompactionStrategy"
@@ -175,9 +223,11 @@ resource "cassandra_system_level_profile" "default_twcs" {
   }
 
   gc_grace_seconds = 86400
-  comment          = "Default production profile"
+  comment          = "Write-heavy production profile"
 }
 ```
+
+Use these profiles as shared operational baselines. Keep common defaults such as compaction strategy in the profile, and keep table-specific tuning such as compression `chunk_length_in_kb` in `cassandra_system_level_table_settings`.
 
 ## User-level schema
 
@@ -186,7 +236,7 @@ resource "cassandra_user_level_table" "events" {
   keyspace                = "app"
   table_name              = "events"
   if_not_exists           = true
-  required_system_profile = "default_twcs"
+  required_system_profile = "write_heavy"
 
   columns = [
     {
@@ -232,19 +282,8 @@ resource "cassandra_system_level_table_settings" "events" {
   keyspace   = "app"
   table_name = "events"
 
-  compaction = {
-    class = "org.apache.cassandra.db.compaction.TimeWindowCompactionStrategy"
-    options = {
-      compaction_window_size = "1"
-      compaction_window_unit = "DAYS"
-    }
-  }
-
-  gc_grace_seconds = 86400
-  comment          = "Managed by Terraform"
-
   additional_options = {
-    caching = "{'keys':'ALL','rows_per_partition':'NONE'}"
+    compression = "{'class':'LZ4Compressor','chunk_length_in_kb':'64'}"
   }
 }
 ```
@@ -260,13 +299,14 @@ Recommended ownership split:
 Avoid having two Terraform states manage the same concern. A clean boundary is:
 
 - user-level owns columns, primary key layout, clustering order, SAI definitions, and the choice of approved profile
-- system-level profile owns default compaction and operational policy
+- system-level profile owns shared defaults such as compaction and general operational policy
 - system-level table settings owns table-specific exceptions only
 
 ## Behavior notes
 
 - Partition keys and clustering keys are treated as immutable.
 - Column type changes are rejected because Cassandra does not safely support all in-place type migrations.
+- `required_system_profile` is create-time only. Change per-table operational tuning later with `cassandra_system_level_table_settings`.
 - Resource deletion removes Terraform state only; it does not drop live tables or indexes.
 
 ## Development

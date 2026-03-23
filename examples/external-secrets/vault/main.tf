@@ -32,8 +32,8 @@ provider "cassandra" {
   password         = data.vault_kv_secret_v2.cassandra.data["password"]
 }
 
-resource "cassandra_system_level_profile" "default_twcs" {
-  name = "default_twcs"
+resource "cassandra_system_level_profile" "write_heavy" {
+  name = "write_heavy"
 
   compaction = {
     class = "org.apache.cassandra.db.compaction.TimeWindowCompactionStrategy"

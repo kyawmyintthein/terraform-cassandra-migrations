@@ -87,7 +87,7 @@ func (r *UserLevelTableResource) Schema(_ context.Context, _ resource.SchemaRequ
 			},
 			"required_system_profile": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Name of a DB-admin managed cassandra_system_level_profile that must exist and will be applied during table creation.",
+				MarkdownDescription: "Name of a DB-admin managed cassandra_system_level_profile that must exist and will be applied during table creation. This baseline is create-time only; post-create operational tuning belongs in cassandra_system_level_table_settings.",
 			},
 			"columns": schema.ListNestedAttribute{
 				Required: true,
@@ -197,20 +197,27 @@ func (r *UserLevelTableResource) Create(ctx context.Context, req resource.Create
 			return
 		}
 	}
-	if err := r.client.Exec(createStatement); err != nil {
-		resp.Diagnostics.AddError("Unable to Create Table", fmt.Sprintf("CQL: %s\nError: %s", createStatement, err))
+
+	resourceID := plan.Keyspace.ValueString() + "." + plan.TableName.ValueString()
+	if err := r.client.WithSchemaMigrationLock(ctx, resourceID, "create table", func(lockCtx context.Context) error {
+		if err := r.client.ExecSchemaMutation(lockCtx, createStatement); err != nil {
+			return fmt.Errorf("create table failed. CQL: %s. Error: %w", createStatement, err)
+		}
+
+		for _, index := range saiIndexes {
+			stmt := buildCreateSAIIndexStatement(plan.Keyspace.ValueString(), plan.TableName.ValueString(), index)
+			if err := r.client.ExecSchemaMutation(lockCtx, stmt); err != nil {
+				return fmt.Errorf("create SAI index failed. CQL: %s. Error: %w", stmt, err)
+			}
+		}
+
+		return nil
+	}); err != nil {
+		resp.Diagnostics.AddError("Unable to Create Table", err.Error())
 		return
 	}
 
-	for _, index := range saiIndexes {
-		stmt := buildCreateSAIIndexStatement(plan.Keyspace.ValueString(), plan.TableName.ValueString(), index)
-		if err := r.client.Exec(stmt); err != nil {
-			resp.Diagnostics.AddError("Unable to Create SAI Index", fmt.Sprintf("CQL: %s\nError: %s", stmt, err))
-			return
-		}
-	}
-
-	plan.ID = types.StringValue(plan.Keyspace.ValueString() + "." + plan.TableName.ValueString())
+	plan.ID = types.StringValue(resourceID)
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
@@ -258,45 +265,37 @@ func (r *UserLevelTableResource) Update(ctx context.Context, req resource.Update
 		resp.Diagnostics.AddAttributeError(path.Root("clustering_keys"), "Clustering Keys Are Immutable", "Changing clustering keys requires a new Cassandra table.")
 		return
 	}
+	if plan.RequiredSystemProfile.ValueString() != state.RequiredSystemProfile.ValueString() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("required_system_profile"),
+			"Required System Profile Is Create-Time Only",
+			"Changing required_system_profile after table creation is not supported. Keep shared defaults in the profile selected at create time and use cassandra_system_level_table_settings for per-table operational overrides.",
+		)
+		return
+	}
 
 	if err := validateKeysAgainstColumns(planColumns, planPartitionKeys, planClusteringKeys); err != nil {
 		resp.Diagnostics.AddError("Invalid Key Definition", err.Error())
 		return
 	}
 
-	if err := applyColumnDiffs(r.client, plan.Keyspace.ValueString(), plan.TableName.ValueString(), stateColumns, planColumns); err != nil {
-		resp.Diagnostics.AddError("Unable to Apply Column Migration", err.Error())
+	resourceID := plan.Keyspace.ValueString() + "." + plan.TableName.ValueString()
+	if err := r.client.WithSchemaMigrationLock(ctx, resourceID, "update table", func(lockCtx context.Context) error {
+		if err := applyColumnDiffs(lockCtx, r.client, plan.Keyspace.ValueString(), plan.TableName.ValueString(), stateColumns, planColumns); err != nil {
+			return err
+		}
+
+		if err := applySAIDiffs(lockCtx, r.client, plan.Keyspace.ValueString(), plan.TableName.ValueString(), stateSAIIndexes, planSAIIndexes); err != nil {
+			return err
+		}
+
+		return nil
+	}); err != nil {
+		resp.Diagnostics.AddError("Unable to Apply Schema Migration", err.Error())
 		return
 	}
 
-	if err := applySAIDiffs(r.client, plan.Keyspace.ValueString(), plan.TableName.ValueString(), stateSAIIndexes, planSAIIndexes); err != nil {
-		resp.Diagnostics.AddError("Unable to Apply SAI Migration", err.Error())
-		return
-	}
-
-	if plan.RequiredSystemProfile.ValueString() != state.RequiredSystemProfile.ValueString() && !plan.RequiredSystemProfile.IsNull() && !plan.RequiredSystemProfile.IsUnknown() {
-		settings, exists, err := r.client.GetSystemProfile(plan.RequiredSystemProfile.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError("Unable to Resolve Required System Profile", err.Error())
-			return
-		}
-		if !exists {
-			resp.Diagnostics.AddAttributeError(path.Root("required_system_profile"), "Missing Required System Profile", fmt.Sprintf("System profile %q was not found.", plan.RequiredSystemProfile.ValueString()))
-			return
-		}
-
-		statement, err := buildAlterTableSettingsStatement(plan.Keyspace.ValueString(), plan.TableName.ValueString(), settings)
-		if err != nil {
-			resp.Diagnostics.AddError("Unable to Apply Required System Profile", err.Error())
-			return
-		}
-		if err := r.client.Exec(statement); err != nil {
-			resp.Diagnostics.AddError("Unable to Apply Required System Profile", fmt.Sprintf("CQL: %s\nError: %s", statement, err))
-			return
-		}
-	}
-
-	plan.ID = types.StringValue(plan.Keyspace.ValueString() + "." + plan.TableName.ValueString())
+	plan.ID = types.StringValue(resourceID)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -428,7 +427,7 @@ func equalClusteringKeys(left, right []ClusteringKeyModel) bool {
 	return true
 }
 
-func applyColumnDiffs(client *CassandraClient, keyspace, table string, previous, next []ColumnModel) error {
+func applyColumnDiffs(ctx context.Context, client *CassandraClient, keyspace, table string, previous, next []ColumnModel) error {
 	previousByName := make(map[string]ColumnModel, len(previous))
 	nextByName := make(map[string]ColumnModel, len(next))
 
@@ -443,7 +442,7 @@ func applyColumnDiffs(client *CassandraClient, keyspace, table string, previous,
 		nextColumn, ok := nextByName[name]
 		if !ok {
 			stmt := fmt.Sprintf("ALTER TABLE %s DROP %s", qualifiedTableName(keyspace, table), quoteIdentifier(name))
-			if err := client.Exec(stmt); err != nil {
+			if err := client.ExecSchemaMutation(ctx, stmt); err != nil {
 				return fmt.Errorf("drop column %q failed: %w", name, err)
 			}
 			continue
@@ -462,7 +461,7 @@ func applyColumnDiffs(client *CassandraClient, keyspace, table string, previous,
 		if !column.Static.IsNull() && column.Static.ValueBool() {
 			stmt += " STATIC"
 		}
-		if err := client.Exec(stmt); err != nil {
+		if err := client.ExecSchemaMutation(ctx, stmt); err != nil {
 			return fmt.Errorf("add column %q failed: %w", name, err)
 		}
 	}
@@ -496,7 +495,7 @@ func buildCreateSAIIndexStatement(keyspace, table string, index SAIIndexModel) s
 	return stmt + " WITH OPTIONS = {" + strings.Join(parts, ", ") + "}"
 }
 
-func applySAIDiffs(client *CassandraClient, keyspace, table string, previous, next []SAIIndexModel) error {
+func applySAIDiffs(ctx context.Context, client *CassandraClient, keyspace, table string, previous, next []SAIIndexModel) error {
 	previousByName := make(map[string]SAIIndexModel, len(previous))
 	nextByName := make(map[string]SAIIndexModel, len(next))
 
@@ -512,7 +511,7 @@ func applySAIDiffs(client *CassandraClient, keyspace, table string, previous, ne
 			continue
 		}
 		stmt := fmt.Sprintf("DROP INDEX IF EXISTS %s.%s", quoteIdentifier(keyspace), quoteIdentifier(name))
-		if err := client.Exec(stmt); err != nil {
+		if err := client.ExecSchemaMutation(ctx, stmt); err != nil {
 			return fmt.Errorf("drop index %q failed: %w", name, err)
 		}
 	}
@@ -525,7 +524,7 @@ func applySAIDiffs(client *CassandraClient, keyspace, table string, previous, ne
 			continue
 		}
 		stmt := buildCreateSAIIndexStatement(keyspace, table, index)
-		if err := client.Exec(stmt); err != nil {
+		if err := client.ExecSchemaMutation(ctx, stmt); err != nil {
 			return fmt.Errorf("create index %q failed: %w", name, err)
 		}
 	}

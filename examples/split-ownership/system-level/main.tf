@@ -7,13 +7,48 @@ terraform {
 }
 
 provider "cassandra" {
-  hosts            = ["127.0.0.1"]
-  port             = 9042
-  local_datacenter = "dc1"
+  hosts                   = ["127.0.0.1"]
+  port                    = 9042
+  local_datacenter        = "dc1"
+  migration_lock_keyspace = "terraform_schema_migration"
+  migration_lock_table    = "schema_migration_locks"
 }
 
-resource "cassandra_system_level_profile" "default_twcs" {
-  name = "default_twcs"
+resource "cassandra_system_level_migration_lock_store" "schema" {
+  keyspace   = "terraform_schema_migration"
+  table_name = "schema_migration_locks"
+
+  replication = {
+    class = "NetworkTopologyStrategy"
+    dc1   = "3"
+  }
+}
+
+resource "cassandra_system_level_profile" "default" {
+  name    = "default"
+  comment = "Balanced baseline for general-purpose tables"
+
+  compaction = {
+    class = "org.apache.cassandra.db.compaction.UnifiedCompactionStrategy"
+  }
+
+  gc_grace_seconds = 86400
+}
+
+resource "cassandra_system_level_profile" "read_heavy" {
+  name    = "read_heavy"
+  comment = "Read-optimized baseline for latency-sensitive workloads"
+
+  compaction = {
+    class = "org.apache.cassandra.db.compaction.LeveledCompactionStrategy"
+  }
+
+  gc_grace_seconds = 86400
+}
+
+resource "cassandra_system_level_profile" "write_heavy" {
+  name = "write_heavy"
+  comment = "Write-optimized baseline for high-ingest workloads"
 
   compaction = {
     class = "org.apache.cassandra.db.compaction.TimeWindowCompactionStrategy"
@@ -24,9 +59,18 @@ resource "cassandra_system_level_profile" "default_twcs" {
   }
 
   gc_grace_seconds = 86400
-  comment          = "Default profile managed by DB admin Terraform"
+  comment          = "Write-heavy profile managed by DB admin Terraform"
 
   additional_options = {
     caching = "{'keys':'ALL','rows_per_partition':'NONE'}"
+  }
+}
+
+resource "cassandra_system_level_table_settings" "events_storage" {
+  keyspace   = "app"
+  table_name = "events"
+
+  additional_options = {
+    compression = "{'class':'LZ4Compressor','chunk_length_in_kb':'64'}"
   }
 }

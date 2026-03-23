@@ -2,7 +2,9 @@
 
 This provider manages Cassandra schema changes in two layers:
 
+- `cassandra_user_level_keyspace`: app-owned keyspace requests that choose only the keyspace name and approved regions or datacenters.
 - `cassandra_user_level_table`: table shape, keys, additive/removal column migrations, and SAI indexes.
+- `cassandra_system_level_keyspace_policy`: admin-managed keyspace replication policy and per-region replica settings.
 - `cassandra_system_level_table_settings`: operational table settings such as compaction strategy and table options.
 
 ## Project status
@@ -19,10 +21,12 @@ See:
 
 Recommended default: split ownership into two Terraform projects and two Terraform states.
 
-- DB admin or platform team owns system-level profiles and exception settings.
-- Client app team owns user-level table definition.
+- DB admin or platform team owns system-level keyspace policies, table profiles, and exception settings.
+- Client app team owns user-level keyspace requests and table definition.
 
 This split reduces risk because application teams can evolve table shape without accidentally changing compaction or storage behavior, while DB admins keep control over operational tuning. It also solves the "half-created table" problem by letting the app team require an admin-managed system profile during table creation.
+
+The same boundary now applies to keyspaces: platform teams define replication strategy, durable writes, and approved datacenters or regions once, while app teams only choose the keyspace name and which approved regions they need active.
 
 Use the central PR-review model only when:
 
@@ -43,8 +47,9 @@ Use the central PR-review model only when:
 When you use separate Terraform states:
 
 1. Apply the system-level profile Terraform first so approved profiles exist in Cassandra.
-2. Apply the user-level Terraform after that so the table is created with the required profile already attached.
-3. Optionally apply table-specific `cassandra_system_level_table_settings` afterward for one-off overrides.
+2. Apply the system-level keyspace policy Terraform first so approved keyspace policies exist before app teams request keyspaces.
+3. Apply the user-level Terraform after that so the keyspace and table are created with approved system defaults already attached.
+4. Optionally apply table-specific `cassandra_system_level_table_settings` afterward for one-off overrides.
 
 The provider keeps responsibilities separate, but app teams can now require a DB-admin profile up front so production tables are not created without essential compaction and operational defaults.
 
@@ -229,10 +234,50 @@ resource "cassandra_system_level_profile" "write_heavy" {
 
 Use these profiles as shared operational baselines. Keep common defaults such as compaction strategy in the profile, and keep table-specific tuning such as compression `chunk_length_in_kb` in `cassandra_system_level_table_settings`.
 
+## Admin-managed keyspace policies
+
+```hcl
+resource "cassandra_system_level_keyspace_policy" "regional" {
+  name = "regional"
+
+  replication_class = "NetworkTopologyStrategy"
+  durable_writes    = true
+
+  region_replication_factors = {
+    ap-southeast-2 = "3"
+    us-east-1      = "2"
+    eu-west-1      = "2"
+  }
+}
+```
+
+Use a keyspace policy to hide replication strategy details from application teams. With `NetworkTopologyStrategy`, the platform team defines the allowed region or datacenter names and each region's replication factor in `region_replication_factors`; the app team selects only which of those approved regions it wants active. With `SimpleStrategy`, the app team does not provide any regions and the platform team uses `replication_factor`.
+
+## User-level keyspaces
+
+```hcl
+resource "cassandra_user_level_keyspace" "app" {
+  keyspace                        = "app"
+  if_not_exists                   = true
+  required_system_keyspace_policy = "regional"
+  regions                         = ["ap-southeast-2", "us-east-1"]
+}
+```
+
+This resource intentionally limits the app-owned surface area:
+
+- app teams choose the keyspace name
+- app teams choose which approved regions or datacenters are active
+- platform teams keep ownership of replication strategy, per-region replica counts, and durable writes
+
+For safety, changing `required_system_keyspace_policy` is create-time only, and removing an already-managed region is rejected for in-place updates so replica reductions stay explicit and manually coordinated.
+
 ## User-level schema
 
 ```hcl
 resource "cassandra_user_level_table" "events" {
+  depends_on = [cassandra_user_level_keyspace.app]
+
   keyspace                = "app"
   table_name              = "events"
   if_not_exists           = true
@@ -292,13 +337,17 @@ resource "cassandra_system_level_table_settings" "events" {
 
 Recommended ownership split:
 
+- `cassandra_user_level_keyspace`: app or service team
 - `cassandra_user_level_table`: app or service team
+- `cassandra_system_level_keyspace_policy`: DB admin or platform team
 - `cassandra_system_level_profile`: DB admin or platform team
 - `cassandra_system_level_table_settings`: DB admin or platform team
 
 Avoid having two Terraform states manage the same concern. A clean boundary is:
 
 - user-level owns columns, primary key layout, clustering order, SAI definitions, and the choice of approved profile
+- user-level keyspace owns only the requested keyspace name and the selected approved regions
+- system-level keyspace policy owns replication strategy, durable writes, and per-region replica guardrails
 - system-level profile owns shared defaults such as compaction and general operational policy
 - system-level table settings owns table-specific exceptions only
 
@@ -306,8 +355,9 @@ Avoid having two Terraform states manage the same concern. A clean boundary is:
 
 - Partition keys and clustering keys are treated as immutable.
 - Column type changes are rejected because Cassandra does not safely support all in-place type migrations.
+- `required_system_keyspace_policy` is create-time only. Region additions are allowed, but region removal is rejected for in-place updates.
 - `required_system_profile` is create-time only. Change per-table operational tuning later with `cassandra_system_level_table_settings`.
-- Resource deletion removes Terraform state only; it does not drop live tables or indexes.
+- Resource deletion removes Terraform state only; it does not drop live keyspaces, tables, or indexes.
 
 ## Development
 

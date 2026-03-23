@@ -32,6 +32,7 @@ type CassandraClient struct {
 const (
 	profileRegistryKeyspace = "terraform_schema_migration"
 	profileRegistryTable    = "system_level_profiles"
+	keyspacePolicyTable     = "system_level_keyspace_policies"
 	schemaLockTable         = "schema_migration_locks"
 	schemaLockTTLSeconds    = 90
 	schemaLockRetryInterval = 2 * time.Second
@@ -102,6 +103,21 @@ func (c *CassandraClient) TableExists(keyspace, table string) (bool, error) {
 	return true, nil
 }
 
+func (c *CassandraClient) KeyspaceExists(keyspace string) (bool, error) {
+	var found string
+	err := c.session.Query(
+		`SELECT keyspace_name FROM system_schema.keyspaces WHERE keyspace_name = ? LIMIT 1`,
+		keyspace,
+	).Scan(&found)
+	if err == gocql.ErrNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (c *CassandraClient) IndexExists(keyspace, indexName string) (bool, error) {
 	var found string
 	err := c.session.Query(
@@ -117,7 +133,7 @@ func (c *CassandraClient) IndexExists(keyspace, indexName string) (bool, error) 
 	return true, nil
 }
 
-func (c *CassandraClient) EnsureProfileStore() error {
+func (c *CassandraClient) EnsureSystemMetadataStore() error {
 	keyspaceStmt := fmt.Sprintf(
 		"CREATE KEYSPACE IF NOT EXISTS %s WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}",
 		quoteIdentifier(profileRegistryKeyspace),
@@ -131,7 +147,16 @@ func (c *CassandraClient) EnsureProfileStore() error {
 		quoteIdentifier(profileRegistryKeyspace),
 		quoteIdentifier(profileRegistryTable),
 	)
-	return c.ExecSchemaMutation(context.Background(), tableStmt)
+	if err := c.ExecSchemaMutation(context.Background(), tableStmt); err != nil {
+		return err
+	}
+
+	keyspacePolicyStmt := fmt.Sprintf(
+		"CREATE TABLE IF NOT EXISTS %s.%s (policy_name text PRIMARY KEY, payload text, updated_at timestamp)",
+		quoteIdentifier(profileRegistryKeyspace),
+		quoteIdentifier(keyspacePolicyTable),
+	)
+	return c.ExecSchemaMutation(context.Background(), keyspacePolicyStmt)
 }
 
 func (c *CassandraClient) SchemaLockStoreExists() (bool, error) {
@@ -321,7 +346,7 @@ func (c *CassandraClient) ReleaseSchemaMigrationLock(ctx context.Context, lock S
 }
 
 func (c *CassandraClient) UpsertSystemProfile(name string, settings SystemSettings) error {
-	if err := c.EnsureProfileStore(); err != nil {
+	if err := c.EnsureSystemMetadataStore(); err != nil {
 		return err
 	}
 
@@ -342,7 +367,7 @@ func (c *CassandraClient) UpsertSystemProfile(name string, settings SystemSettin
 }
 
 func (c *CassandraClient) GetSystemProfile(name string) (SystemSettings, bool, error) {
-	if err := c.EnsureProfileStore(); err != nil {
+	if err := c.EnsureSystemMetadataStore(); err != nil {
 		return SystemSettings{}, false, err
 	}
 
@@ -370,7 +395,7 @@ func (c *CassandraClient) GetSystemProfile(name string) (SystemSettings, bool, e
 }
 
 func (c *CassandraClient) DeleteSystemProfile(name string) error {
-	if err := c.EnsureProfileStore(); err != nil {
+	if err := c.EnsureSystemMetadataStore(); err != nil {
 		return err
 	}
 	return c.session.Query(
@@ -378,6 +403,69 @@ func (c *CassandraClient) DeleteSystemProfile(name string) error {
 			"DELETE FROM %s.%s WHERE profile_name = ?",
 			quoteIdentifier(profileRegistryKeyspace),
 			quoteIdentifier(profileRegistryTable),
+		),
+		name,
+	).Exec()
+}
+
+func (c *CassandraClient) UpsertSystemKeyspacePolicy(name string, policy SystemKeyspacePolicy) error {
+	if err := c.EnsureSystemMetadataStore(); err != nil {
+		return err
+	}
+
+	payload, err := json.Marshal(policy)
+	if err != nil {
+		return err
+	}
+
+	return c.session.Query(
+		fmt.Sprintf(
+			"INSERT INTO %s.%s (policy_name, payload, updated_at) VALUES (?, ?, toTimestamp(now()))",
+			quoteIdentifier(profileRegistryKeyspace),
+			quoteIdentifier(keyspacePolicyTable),
+		),
+		name,
+		string(payload),
+	).Exec()
+}
+
+func (c *CassandraClient) GetSystemKeyspacePolicy(name string) (SystemKeyspacePolicy, bool, error) {
+	if err := c.EnsureSystemMetadataStore(); err != nil {
+		return SystemKeyspacePolicy{}, false, err
+	}
+
+	var payload string
+	err := c.session.Query(
+		fmt.Sprintf(
+			"SELECT payload FROM %s.%s WHERE policy_name = ? LIMIT 1",
+			quoteIdentifier(profileRegistryKeyspace),
+			quoteIdentifier(keyspacePolicyTable),
+		),
+		name,
+	).Scan(&payload)
+	if err == gocql.ErrNotFound {
+		return SystemKeyspacePolicy{}, false, nil
+	}
+	if err != nil {
+		return SystemKeyspacePolicy{}, false, err
+	}
+
+	var policy SystemKeyspacePolicy
+	if err := json.Unmarshal([]byte(payload), &policy); err != nil {
+		return SystemKeyspacePolicy{}, false, err
+	}
+	return policy, true, nil
+}
+
+func (c *CassandraClient) DeleteSystemKeyspacePolicy(name string) error {
+	if err := c.EnsureSystemMetadataStore(); err != nil {
+		return err
+	}
+	return c.session.Query(
+		fmt.Sprintf(
+			"DELETE FROM %s.%s WHERE policy_name = ?",
+			quoteIdentifier(profileRegistryKeyspace),
+			quoteIdentifier(keyspacePolicyTable),
 		),
 		name,
 	).Exec()

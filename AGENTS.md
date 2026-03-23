@@ -41,6 +41,8 @@ That separation is a core design constraint, not just a documentation preference
 When using AI to assist with changes in this repository:
 
 - Read existing code before editing so changes match the current provider model.
+- Start each distinct feature or task on its own branch.
+- Prefer using a dedicated git worktree under `.worktree/` for each separate feature or task so parallel changes stay isolated.
 - Make the smallest safe change that solves the problem.
 - Preserve public behavior unless the change explicitly intends to alter it.
 - Keep generated code easy for humans to review and maintain.
@@ -100,11 +102,21 @@ Good pull requests in this repository:
 ## Suggested workflow for AI-assisted edits
 
 1. Read the relevant provider files and examples first.
-2. Identify whether the change belongs to user-level or system-level ownership.
-3. Make the smallest safe implementation change.
-4. Update docs or examples if behavior changed.
-5. Run formatting, vet, and tests.
-6. Summarize risks, assumptions, and validation in the PR.
+2. Create a new branch for the task before making changes.
+3. For independent or parallel work, create a dedicated git worktree under `.worktree/<task-name>` and use that worktree for the task.
+4. Identify whether the change belongs to user-level or system-level ownership.
+5. Make the smallest safe implementation change.
+6. Update docs or examples if behavior changed.
+7. Run formatting, vet, and tests.
+8. Summarize risks, assumptions, and validation in the PR.
+
+## Branch and worktree workflow
+
+- Use one branch per feature, fix, or investigation.
+- Prefer descriptive branch names that reflect the single concern being changed.
+- Keep task-specific worktrees under `.worktree/` so the main checkout stays clean.
+- When using git worktrees, create the branch and worktree together so the task starts isolated from other in-progress changes.
+- Remove task worktrees when the work is merged or no longer needed.
 
 ## If you are unsure
 

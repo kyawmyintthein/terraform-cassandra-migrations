@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a problem with provider behavior, examples, or documentation.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: terraform
+    attributes:
+      label: Terraform configuration
+      description: Share a minimal configuration that reproduces the issue.
+      render: hcl
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Paste relevant error messages, logs, or plan output.
+      render: shell
+  - type: input
+    id: provider_version
+    attributes:
+      label: Provider version
+      placeholder: v0.1.0
+  - type: input
+    id: terraform_version
+    attributes:
+      label: Terraform version
+      placeholder: 1.8.0
+  - type: input
+    id: cassandra_version
+    attributes:
+      label: Cassandra version
+      placeholder: 5.0.x

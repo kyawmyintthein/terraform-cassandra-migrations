@@ -15,6 +15,8 @@ provider "cassandra" {
 }
 
 resource "cassandra_user_level_table" "events" {
+  depends_on = [cassandra_user_level_keyspace.app]
+
   keyspace                = "app"
   table_name              = "events"
   if_not_exists           = true
@@ -54,4 +56,11 @@ resource "cassandra_user_level_table" "events" {
       column = "event_type"
     }
   ]
+}
+
+resource "cassandra_user_level_keyspace" "app" {
+  keyspace                         = "app"
+  if_not_exists                    = true
+  required_system_keyspace_policy  = "regional"
+  regions                          = ["ap-southeast-2", "us-east-1"]
 }

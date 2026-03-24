@@ -12,7 +12,26 @@ provider "cassandra" {
   local_datacenter = "dc1"
 }
 
+resource "cassandra_system_level_keyspace_policy" "regional" {
+  name = "regional"
+
+  replication_class = "NetworkTopologyStrategy"
+
+  region_replication_factors = {
+    dc1 = "3"
+    dc2 = "2"
+  }
+}
+
+resource "cassandra_user_level_keyspace" "app" {
+  keyspace                        = "app"
+  required_system_keyspace_policy = cassandra_system_level_keyspace_policy.regional.name
+  regions                         = ["dc1", "dc2"]
+}
+
 resource "cassandra_user_level_table" "events" {
+  depends_on = [cassandra_user_level_keyspace.app]
+
   keyspace                = "app"
   table_name              = "events"
   if_not_exists           = true

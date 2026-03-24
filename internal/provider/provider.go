@@ -158,7 +158,9 @@ func (p *CassandraProvider) Configure(ctx context.Context, req provider.Configur
 
 func (p *CassandraProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
+		NewUserLevelKeyspaceResource,
 		NewUserLevelTableResource,
+		NewSystemLevelKeyspacePolicyResource,
 		NewSystemLevelTableSettingsResource,
 		NewSystemLevelProfileResource,
 		NewSystemLevelMigrationLockStoreResource,

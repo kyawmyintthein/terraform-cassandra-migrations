@@ -24,6 +24,19 @@ resource "cassandra_system_level_migration_lock_store" "schema" {
   }
 }
 
+resource "cassandra_system_level_keyspace_policy" "regional" {
+  name = "regional"
+
+  replication_class = "NetworkTopologyStrategy"
+  durable_writes    = true
+
+  region_replication_factors = {
+    ap-southeast-2 = "3"
+    us-east-1      = "2"
+    eu-west-1      = "2"
+  }
+}
+
 resource "cassandra_system_level_profile" "default" {
   name    = "default"
   comment = "Balanced baseline for general-purpose tables"

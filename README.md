@@ -55,7 +55,7 @@ The provider keeps responsibilities separate, but app teams can now require a DB
 
 ## Migration coordination
 
-User-level schema migrations are serialized per Cassandra table through a platform-managed lock table. The provider acquires the lock with a Cassandra lightweight transaction, renews the lease while the migration is running, and waits for schema agreement after each schema-changing statement before continuing.
+Table-level schema mutations are serialized per Cassandra table through a platform-managed lock table. The provider acquires the lock with a Cassandra lightweight transaction, renews the lease while the migration is running, and waits for schema agreement after each schema-changing statement before continuing.
 
 Provision the lock store first with the system-level resource:
 
@@ -71,9 +71,9 @@ resource "cassandra_system_level_migration_lock_store" "schema" {
 }
 ```
 
-The `keyspace` and `table_name` must match the provider's `migration_lock_keyspace` and `migration_lock_table` settings used by user-level applies. User-level resources will not auto-create this store; they fail with a clear error until the platform-managed lock store exists.
+The `keyspace` and `table_name` must match the provider's `migration_lock_keyspace` and `migration_lock_table` settings used by applies that mutate Cassandra schema. Resources that rely on schema locking will not auto-create this store; they fail with a clear error until the platform-managed lock store exists.
 
-This reduces drift when separate Terraform runs or pipelines try to mutate the same table concurrently. It is still best practice to serialize Terraform applies per environment in CI/CD so Cassandra locking remains a safety net rather than the only coordination layer.
+This reduces drift when separate Terraform runs or pipelines try to mutate the same table concurrently, including overlap between user-level table changes and system-level per-table setting changes. It is still best practice to serialize Terraform applies per environment in CI/CD so Cassandra locking remains a safety net rather than the only coordination layer.
 
 ## Provider
 
@@ -100,6 +100,8 @@ provider "cassandra" {
   migration_lock_table     = "schema_migration_locks"
 }
 ```
+
+Unless you override it with `consistency` or `CASSANDRA_CONSISTENCY`, the provider uses `LOCAL_QUORUM` for schema operations by default. This aligns schema changes with the configured `local_datacenter` and avoids relying on cross-datacenter quorum by default.
 
 `cassandra_system_level_profile` and `cassandra_system_level_keyspace_policy` automatically create their shared metadata keyspace if it does not exist yet. Use `system_metadata_keyspace` to place that store where your platform team wants it, and `system_metadata_replication` to control its replication strategy and replication factor explicitly.
 

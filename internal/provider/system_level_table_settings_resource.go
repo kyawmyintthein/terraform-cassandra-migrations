@@ -169,10 +169,13 @@ func (r *SystemLevelTableSettingsResource) applySettings(ctx context.Context, pl
 		return
 	}
 
-	if err := r.client.Exec(statement); err != nil {
+	resourceID := plan.Keyspace.ValueString() + "." + plan.TableName.ValueString()
+	if err := r.client.WithSchemaMigrationLock(ctx, resourceID, "alter table settings", func(lockCtx context.Context) error {
+		return r.client.ExecSchemaMutation(lockCtx, statement)
+	}); err != nil {
 		diags.AddError("Unable to Apply Table Settings", fmt.Sprintf("CQL: %s\nError: %s", statement, err))
 		return
 	}
 
-	plan.ID = types.StringValue(plan.Keyspace.ValueString() + "." + plan.TableName.ValueString())
+	plan.ID = types.StringValue(resourceID)
 }

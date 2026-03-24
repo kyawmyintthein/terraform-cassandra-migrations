@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -193,9 +194,40 @@ func validateReplicationMap(replication map[string]string) error {
 	if len(replication) == 0 {
 		return fmt.Errorf("replication must include at least a class entry")
 	}
-	if strings.TrimSpace(replication["class"]) == "" {
+	class := strings.TrimSpace(replication["class"])
+	if class == "" {
 		return fmt.Errorf("replication must include a non-empty class entry")
 	}
+
+	switch class {
+	case replicationClassSimpleStrategy:
+		factor, err := strconv.ParseInt(strings.TrimSpace(replication["replication_factor"]), 10, 64)
+		if err != nil || factor < 1 {
+			return fmt.Errorf("replication_factor must be an integer string of at least 1 when class is %q", replicationClassSimpleStrategy)
+		}
+	case replicationClassNetworkTopologyStrategy:
+		if len(replication) < 2 {
+			return fmt.Errorf("replication must include at least one datacenter or region entry when class is %q", replicationClassNetworkTopologyStrategy)
+		}
+		for key, value := range replication {
+			if key == "class" {
+				continue
+			}
+			if strings.TrimSpace(key) == "" {
+				return fmt.Errorf("replication must not contain an empty datacenter or region name")
+			}
+
+			factor, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			if err != nil || factor < 1 {
+				return fmt.Errorf("replication[%q] must be an integer string of at least 1", key)
+			}
+		}
+	default:
+		if len(replication) == 1 {
+			return fmt.Errorf("replication for class %q must include at least one strategy-specific option", class)
+		}
+	}
+
 	return nil
 }
 

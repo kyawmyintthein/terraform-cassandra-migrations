@@ -87,13 +87,21 @@ terraform {
 }
 
 provider "cassandra" {
-  hosts                   = ["127.0.0.1"]
-  port                    = 9042
-  local_datacenter        = "dc1"
-  migration_lock_keyspace = "terraform_schema_migration"
-  migration_lock_table    = "schema_migration_locks"
+  hosts                    = ["127.0.0.1"]
+  port                     = 9042
+  local_datacenter         = "dc1"
+  system_metadata_keyspace = "terraform_schema_migration"
+  system_metadata_replication = {
+    class              = "NetworkTopologyStrategy"
+    dc1                = "3"
+    dc2                = "2"
+  }
+  migration_lock_keyspace  = "terraform_schema_migration"
+  migration_lock_table     = "schema_migration_locks"
 }
 ```
+
+`cassandra_system_level_profile` and `cassandra_system_level_keyspace_policy` automatically create their shared metadata keyspace if it does not exist yet. Use `system_metadata_keyspace` to place that store where your platform team wants it, and `system_metadata_replication` to control its replication strategy and replication factor explicitly.
 
 The provider also supports environment-variable configuration, which is useful when CI/CD, Vault Agent, Kubernetes secrets, or another secret delivery system injects credentials at runtime:
 
@@ -104,6 +112,7 @@ The provider also supports environment-variable configuration, which is useful w
 - `CASSANDRA_PASSWORD`
 - `CASSANDRA_CONSISTENCY`
 - `CASSANDRA_TIMEOUT_SECONDS`
+- `CASSANDRA_SYSTEM_METADATA_KEYSPACE`
 - `CASSANDRA_MIGRATION_LOCK_KEYSPACE`
 - `CASSANDRA_MIGRATION_LOCK_TABLE`
 

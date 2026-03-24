@@ -7,11 +7,16 @@ terraform {
 }
 
 provider "cassandra" {
-  hosts                   = ["127.0.0.1"]
-  port                    = 9042
-  local_datacenter        = "dc1"
-  migration_lock_keyspace = "terraform_schema_migration"
-  migration_lock_table    = "schema_migration_locks"
+  hosts                    = ["127.0.0.1"]
+  port                     = 9042
+  local_datacenter         = "dc1"
+  system_metadata_keyspace = "terraform_schema_migration_admin"
+  system_metadata_replication = {
+    class = "NetworkTopologyStrategy"
+    dc1   = "3"
+  }
+  migration_lock_keyspace  = "terraform_schema_migration"
+  migration_lock_table     = "schema_migration_locks"
 }
 
 resource "cassandra_system_level_migration_lock_store" "schema" {

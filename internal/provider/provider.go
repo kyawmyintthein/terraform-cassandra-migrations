@@ -25,15 +25,17 @@ func New() provider.Provider {
 type CassandraProvider struct{}
 
 type CassandraProviderModel struct {
-	Hosts                 types.List   `tfsdk:"hosts"`
-	Port                  types.Int64  `tfsdk:"port"`
-	LocalDatacenter       types.String `tfsdk:"local_datacenter"`
-	Username              types.String `tfsdk:"username"`
-	Password              types.String `tfsdk:"password"`
-	Consistency           types.String `tfsdk:"consistency"`
-	TimeoutSeconds        types.Int64  `tfsdk:"timeout_seconds"`
-	MigrationLockKeyspace types.String `tfsdk:"migration_lock_keyspace"`
-	MigrationLockTable    types.String `tfsdk:"migration_lock_table"`
+	Hosts                     types.List   `tfsdk:"hosts"`
+	Port                      types.Int64  `tfsdk:"port"`
+	LocalDatacenter           types.String `tfsdk:"local_datacenter"`
+	Username                  types.String `tfsdk:"username"`
+	Password                  types.String `tfsdk:"password"`
+	Consistency               types.String `tfsdk:"consistency"`
+	TimeoutSeconds            types.Int64  `tfsdk:"timeout_seconds"`
+	SystemMetadataKeyspace    types.String `tfsdk:"system_metadata_keyspace"`
+	SystemMetadataReplication types.Map    `tfsdk:"system_metadata_replication"`
+	MigrationLockKeyspace     types.String `tfsdk:"migration_lock_keyspace"`
+	MigrationLockTable        types.String `tfsdk:"migration_lock_table"`
 }
 
 func (p *CassandraProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -74,6 +76,15 @@ func (p *CassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 				Optional:            true,
 				MarkdownDescription: "Query timeout in seconds. Defaults to 30 or CASSANDRA_TIMEOUT_SECONDS when set.",
 			},
+			"system_metadata_keyspace": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Platform-managed keyspace that stores admin-owned system profiles and keyspace policies. Defaults to terraform_schema_migration.",
+			},
+			"system_metadata_replication": schema.MapAttribute{
+				ElementType:         types.StringType,
+				Optional:            true,
+				MarkdownDescription: "Replication map used when the provider auto-creates the system metadata keyspace for system profiles and keyspace policies. Defaults to { class = \"SimpleStrategy\", replication_factor = \"1\" }.",
+			},
 			"migration_lock_keyspace": schema.StringAttribute{
 				Optional:            true,
 				MarkdownDescription: "Platform-managed keyspace that stores schema migration locks. Defaults to terraform_schema_migration.",
@@ -100,6 +111,8 @@ func (p *CassandraProvider) Configure(ctx context.Context, req provider.Configur
 		config.Password.IsUnknown() ||
 		config.Consistency.IsUnknown() ||
 		config.TimeoutSeconds.IsUnknown() ||
+		config.SystemMetadataKeyspace.IsUnknown() ||
+		config.SystemMetadataReplication.IsUnknown() ||
 		config.MigrationLockKeyspace.IsUnknown() ||
 		config.MigrationLockTable.IsUnknown() {
 		return
@@ -128,16 +141,28 @@ func (p *CassandraProvider) Configure(ctx context.Context, req provider.Configur
 		return
 	}
 
+	systemMetadataReplication, err := readSystemMetadataReplicationConfig(ctx, config.SystemMetadataReplication)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("system_metadata_replication"),
+			"Invalid System Metadata Replication",
+			err.Error(),
+		)
+		return
+	}
+
 	clientConfig := CassandraClientConfig{
-		Hosts:                 hosts,
-		Port:                  readIntConfig(config.Port, "CASSANDRA_PORT", 9042, &resp.Diagnostics),
-		LocalDatacenter:       localDatacenter,
-		Username:              readStringConfig(config.Username, "CASSANDRA_USERNAME"),
-		Password:              readStringConfig(config.Password, "CASSANDRA_PASSWORD"),
-		Consistency:           readStringConfigWithDefault(config.Consistency, "CASSANDRA_CONSISTENCY", "QUORUM"),
-		TimeoutSeconds:        readIntConfig(config.TimeoutSeconds, "CASSANDRA_TIMEOUT_SECONDS", 30, &resp.Diagnostics),
-		MigrationLockKeyspace: readStringConfigWithDefault(config.MigrationLockKeyspace, "CASSANDRA_MIGRATION_LOCK_KEYSPACE", profileRegistryKeyspace),
-		MigrationLockTable:    readStringConfigWithDefault(config.MigrationLockTable, "CASSANDRA_MIGRATION_LOCK_TABLE", schemaLockTable),
+		Hosts:                     hosts,
+		Port:                      readIntConfig(config.Port, "CASSANDRA_PORT", 9042, &resp.Diagnostics),
+		LocalDatacenter:           localDatacenter,
+		Username:                  readStringConfig(config.Username, "CASSANDRA_USERNAME"),
+		Password:                  readStringConfig(config.Password, "CASSANDRA_PASSWORD"),
+		Consistency:               readStringConfigWithDefault(config.Consistency, "CASSANDRA_CONSISTENCY", "QUORUM"),
+		TimeoutSeconds:            readIntConfig(config.TimeoutSeconds, "CASSANDRA_TIMEOUT_SECONDS", 30, &resp.Diagnostics),
+		SystemMetadataKeyspace:    readStringConfigWithDefault(config.SystemMetadataKeyspace, "CASSANDRA_SYSTEM_METADATA_KEYSPACE", defaultSystemMetadataKeyspace),
+		SystemMetadataReplication: systemMetadataReplication,
+		MigrationLockKeyspace:     readStringConfigWithDefault(config.MigrationLockKeyspace, "CASSANDRA_MIGRATION_LOCK_KEYSPACE", defaultSystemMetadataKeyspace),
+		MigrationLockTable:        readStringConfigWithDefault(config.MigrationLockTable, "CASSANDRA_MIGRATION_LOCK_TABLE", schemaLockTable),
 	}
 	if resp.Diagnostics.HasError() {
 		return
@@ -232,4 +257,27 @@ func readIntConfig(value types.Int64, envName string, defaultValue int, diags *d
 	}
 
 	return parsed
+}
+
+func readSystemMetadataReplicationConfig(ctx context.Context, value types.Map) (map[string]string, error) {
+	if value.IsNull() || value.IsUnknown() {
+		return defaultSystemMetadataReplication(), nil
+	}
+
+	replication, err := decodeStringMap(ctx, value)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateReplicationMap(replication); err != nil {
+		return nil, err
+	}
+
+	return replication, nil
+}
+
+func defaultSystemMetadataReplication() map[string]string {
+	return map[string]string{
+		"class":              replicationClassSimpleStrategy,
+		"replication_factor": "1",
+	}
 }

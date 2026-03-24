@@ -70,7 +70,7 @@ func (p *CassandraProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 			},
 			"consistency": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Consistency level for schema operations. Defaults to QUORUM or CASSANDRA_CONSISTENCY when set.",
+				MarkdownDescription: "Consistency level for schema operations. Defaults to LOCAL_QUORUM or CASSANDRA_CONSISTENCY when set.",
 			},
 			"timeout_seconds": schema.Int64Attribute{
 				Optional:            true,
@@ -157,7 +157,7 @@ func (p *CassandraProvider) Configure(ctx context.Context, req provider.Configur
 		LocalDatacenter:           localDatacenter,
 		Username:                  readStringConfig(config.Username, "CASSANDRA_USERNAME"),
 		Password:                  readStringConfig(config.Password, "CASSANDRA_PASSWORD"),
-		Consistency:               readStringConfigWithDefault(config.Consistency, "CASSANDRA_CONSISTENCY", "QUORUM"),
+		Consistency:               readStringConfigWithDefault(config.Consistency, "CASSANDRA_CONSISTENCY", "LOCAL_QUORUM"),
 		TimeoutSeconds:            readIntConfig(config.TimeoutSeconds, "CASSANDRA_TIMEOUT_SECONDS", 30, &resp.Diagnostics),
 		SystemMetadataKeyspace:    readStringConfigWithDefault(config.SystemMetadataKeyspace, "CASSANDRA_SYSTEM_METADATA_KEYSPACE", defaultSystemMetadataKeyspace),
 		SystemMetadataReplication: systemMetadataReplication,

@@ -12,30 +12,34 @@ import (
 )
 
 type CassandraClientConfig struct {
-	Hosts                 []string
-	Port                  int
-	LocalDatacenter       string
-	Username              string
-	Password              string
-	Consistency           string
-	TimeoutSeconds        int
-	MigrationLockKeyspace string
-	MigrationLockTable    string
+	Hosts                     []string
+	Port                      int
+	LocalDatacenter           string
+	Username                  string
+	Password                  string
+	Consistency               string
+	TimeoutSeconds            int
+	SystemMetadataKeyspace    string
+	SystemMetadataReplication map[string]string
+	MigrationLockKeyspace     string
+	MigrationLockTable        string
 }
 
 type CassandraClient struct {
-	session               *gocql.Session
-	migrationLockKeyspace string
-	migrationLockTable    string
+	session                   *gocql.Session
+	systemMetadataKeyspace    string
+	systemMetadataReplication map[string]string
+	migrationLockKeyspace     string
+	migrationLockTable        string
 }
 
 const (
-	profileRegistryKeyspace = "terraform_schema_migration"
-	profileRegistryTable    = "system_level_profiles"
-	keyspacePolicyTable     = "system_level_keyspace_policies"
-	schemaLockTable         = "schema_migration_locks"
-	schemaLockTTLSeconds    = 90
-	schemaLockRetryInterval = 2 * time.Second
+	defaultSystemMetadataKeyspace = "terraform_schema_migration"
+	profileRegistryTable          = "system_level_profiles"
+	keyspacePolicyTable           = "system_level_keyspace_policies"
+	schemaLockTable               = "schema_migration_locks"
+	schemaLockTTLSeconds          = 90
+	schemaLockRetryInterval       = 2 * time.Second
 )
 
 type SchemaMigrationLock struct {
@@ -65,9 +69,11 @@ func NewCassandraClient(config CassandraClientConfig) (*CassandraClient, error) 
 	}
 
 	return &CassandraClient{
-		session:               session,
-		migrationLockKeyspace: config.MigrationLockKeyspace,
-		migrationLockTable:    config.MigrationLockTable,
+		session:                   session,
+		systemMetadataKeyspace:    config.SystemMetadataKeyspace,
+		systemMetadataReplication: cloneStringMap(config.SystemMetadataReplication),
+		migrationLockKeyspace:     config.MigrationLockKeyspace,
+		migrationLockTable:        config.MigrationLockTable,
 	}, nil
 }
 
@@ -134,9 +140,17 @@ func (c *CassandraClient) IndexExists(keyspace, indexName string) (bool, error) 
 }
 
 func (c *CassandraClient) EnsureSystemMetadataStore() error {
+	if strings.TrimSpace(c.systemMetadataKeyspace) == "" {
+		return fmt.Errorf("system metadata keyspace must be configured in the provider")
+	}
+	if err := validateReplicationMap(c.systemMetadataReplication); err != nil {
+		return fmt.Errorf("system metadata replication is invalid: %w", err)
+	}
+
 	keyspaceStmt := fmt.Sprintf(
-		"CREATE KEYSPACE IF NOT EXISTS %s WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}",
-		quoteIdentifier(profileRegistryKeyspace),
+		"CREATE KEYSPACE IF NOT EXISTS %s WITH replication = %s",
+		quoteIdentifier(c.systemMetadataKeyspace),
+		buildReplicationLiteral(c.systemMetadataReplication),
 	)
 	if err := c.ExecSchemaMutation(context.Background(), keyspaceStmt); err != nil {
 		return err
@@ -144,7 +158,7 @@ func (c *CassandraClient) EnsureSystemMetadataStore() error {
 
 	tableStmt := fmt.Sprintf(
 		"CREATE TABLE IF NOT EXISTS %s.%s (profile_name text PRIMARY KEY, payload text, updated_at timestamp)",
-		quoteIdentifier(profileRegistryKeyspace),
+		quoteIdentifier(c.systemMetadataKeyspace),
 		quoteIdentifier(profileRegistryTable),
 	)
 	if err := c.ExecSchemaMutation(context.Background(), tableStmt); err != nil {
@@ -153,7 +167,7 @@ func (c *CassandraClient) EnsureSystemMetadataStore() error {
 
 	keyspacePolicyStmt := fmt.Sprintf(
 		"CREATE TABLE IF NOT EXISTS %s.%s (policy_name text PRIMARY KEY, payload text, updated_at timestamp)",
-		quoteIdentifier(profileRegistryKeyspace),
+		quoteIdentifier(c.systemMetadataKeyspace),
 		quoteIdentifier(keyspacePolicyTable),
 	)
 	return c.ExecSchemaMutation(context.Background(), keyspacePolicyStmt)
@@ -358,7 +372,7 @@ func (c *CassandraClient) UpsertSystemProfile(name string, settings SystemSettin
 	return c.session.Query(
 		fmt.Sprintf(
 			"INSERT INTO %s.%s (profile_name, payload, updated_at) VALUES (?, ?, toTimestamp(now()))",
-			quoteIdentifier(profileRegistryKeyspace),
+			quoteIdentifier(c.systemMetadataKeyspace),
 			quoteIdentifier(profileRegistryTable),
 		),
 		name,
@@ -375,7 +389,7 @@ func (c *CassandraClient) GetSystemProfile(name string) (SystemSettings, bool, e
 	err := c.session.Query(
 		fmt.Sprintf(
 			"SELECT payload FROM %s.%s WHERE profile_name = ? LIMIT 1",
-			quoteIdentifier(profileRegistryKeyspace),
+			quoteIdentifier(c.systemMetadataKeyspace),
 			quoteIdentifier(profileRegistryTable),
 		),
 		name,
@@ -401,7 +415,7 @@ func (c *CassandraClient) DeleteSystemProfile(name string) error {
 	return c.session.Query(
 		fmt.Sprintf(
 			"DELETE FROM %s.%s WHERE profile_name = ?",
-			quoteIdentifier(profileRegistryKeyspace),
+			quoteIdentifier(c.systemMetadataKeyspace),
 			quoteIdentifier(profileRegistryTable),
 		),
 		name,
@@ -421,7 +435,7 @@ func (c *CassandraClient) UpsertSystemKeyspacePolicy(name string, policy SystemK
 	return c.session.Query(
 		fmt.Sprintf(
 			"INSERT INTO %s.%s (policy_name, payload, updated_at) VALUES (?, ?, toTimestamp(now()))",
-			quoteIdentifier(profileRegistryKeyspace),
+			quoteIdentifier(c.systemMetadataKeyspace),
 			quoteIdentifier(keyspacePolicyTable),
 		),
 		name,
@@ -438,7 +452,7 @@ func (c *CassandraClient) GetSystemKeyspacePolicy(name string) (SystemKeyspacePo
 	err := c.session.Query(
 		fmt.Sprintf(
 			"SELECT payload FROM %s.%s WHERE policy_name = ? LIMIT 1",
-			quoteIdentifier(profileRegistryKeyspace),
+			quoteIdentifier(c.systemMetadataKeyspace),
 			quoteIdentifier(keyspacePolicyTable),
 		),
 		name,
@@ -464,7 +478,7 @@ func (c *CassandraClient) DeleteSystemKeyspacePolicy(name string) error {
 	return c.session.Query(
 		fmt.Sprintf(
 			"DELETE FROM %s.%s WHERE policy_name = ?",
-			quoteIdentifier(profileRegistryKeyspace),
+			quoteIdentifier(c.systemMetadataKeyspace),
 			quoteIdentifier(keyspacePolicyTable),
 		),
 		name,
@@ -504,6 +518,18 @@ func qualifiedTableName(keyspace, table string) string {
 
 func quoteStringLiteral(value string) string {
 	return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]string, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func newLockToken() (string, error) {

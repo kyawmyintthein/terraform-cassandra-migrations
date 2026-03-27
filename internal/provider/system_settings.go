@@ -97,7 +97,13 @@ func appendSystemSettingsToCreateStatement(base string, settings SystemSettings)
 	if len(clauses) == 0 {
 		return base, nil
 	}
-	return base + " WITH " + strings.Join(clauses, " AND "), nil
+
+	separator := " WITH "
+	if strings.Contains(base, " WITH ") {
+		separator = " AND "
+	}
+
+	return base + separator + strings.Join(clauses, " AND "), nil
 }
 
 func buildSystemSettingsClauses(settings SystemSettings) ([]string, error) {

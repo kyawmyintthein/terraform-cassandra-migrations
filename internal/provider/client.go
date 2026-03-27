@@ -249,7 +249,7 @@ func (c *CassandraClient) AcquireSchemaMigrationLock(ctx context.Context, resour
 		leaseExpiresAt := now.Add(schemaLockTTLSeconds * time.Second)
 		query := c.session.Query(
 			fmt.Sprintf(
-				"INSERT INTO %s.%s (resource_id, lock_token, owner, operation, started_at, last_heartbeat, lease_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL ? IF NOT EXISTS",
+				"INSERT INTO %s.%s (resource_id, lock_token, owner, operation, started_at, last_heartbeat, lease_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS USING TTL ?",
 				quoteIdentifier(c.migrationLockKeyspace),
 				quoteIdentifier(c.migrationLockTable),
 			),

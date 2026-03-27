@@ -22,6 +22,16 @@ Thanks for your interest in improving this Terraform provider.
 gofmt -w .
 go vet ./...
 go test ./...
+./scripts/e2e-test.sh
+```
+
+If you use [`just`](https://github.com/casey/just), the repository also includes shortcuts for the common commands:
+
+```bash
+just fmt
+just vet
+just test
+just e2e
 ```
 
 ## Pull request expectations

@@ -39,3 +39,9 @@ terraform.rc
 # Local git worktrees for parallel tasks
 .worktree/
 .gocache/
+.gomodcache/
+.DS_Store
+test/e2e/.bin/
+test/e2e/.mirror/
+test/e2e/.tmp/
+.tmp/

@@ -75,6 +75,32 @@ The `keyspace` and `table_name` must match the provider's `migration_lock_keyspa
 
 This reduces drift when separate Terraform runs or pipelines try to mutate the same table concurrently, including overlap between user-level table changes and system-level per-table setting changes. It is still best practice to serialize Terraform applies per environment in CI/CD so Cassandra locking remains a safety net rather than the only coordination layer.
 
+## End-to-end tests
+
+The repository includes a Docker-based end-to-end suite under `test/e2e` that exercises real Terraform applies against a disposable Cassandra instance.
+
+It currently covers:
+
+- split-ownership bootstrap and user apply flow
+- additive table evolution with a new column and SAI index
+- a guardrail case that rejects changing `required_system_profile` after table creation
+
+Run the full suite with:
+
+```bash
+./scripts/e2e-test.sh
+just e2e
+```
+
+Run one scenario by name with:
+
+```bash
+./scripts/e2e-test.sh split_ownership
+just e2e split_ownership
+```
+
+The runner builds the provider for Linux, starts Cassandra with Docker Compose, and executes Terraform inside a Docker container, so you do not need a local `terraform` binary installed.
+
 ## Provider
 
 ```hcl

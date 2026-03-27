@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -64,4 +65,27 @@ func TestValidateReplicationMapRejectsSimpleStrategyWithoutReplicationFactor(t *
 	if err == nil {
 		t.Fatal("expected an error when SimpleStrategy replication_factor is missing")
 	}
+}
+
+func TestAppendSystemSettingsToCreateStatementUsesAndAfterExistingWithClause(t *testing.T) {
+	base := `CREATE TABLE "app"."events" ("tenant_id" text, "event_id" timeuuid, PRIMARY KEY ("tenant_id", "event_id")) WITH CLUSTERING ORDER BY ("event_id" DESC)`
+	settings := SystemSettings{
+		Comment: stringPointer("Write-heavy baseline"),
+	}
+
+	statement, err := appendSystemSettingsToCreateStatement(base, settings)
+	if err != nil {
+		t.Fatalf("appendSystemSettingsToCreateStatement returned error: %v", err)
+	}
+
+	if strings.Count(statement, " WITH ") != 1 {
+		t.Fatalf("expected a single WITH clause, got statement %q", statement)
+	}
+	if !strings.Contains(statement, `WITH CLUSTERING ORDER BY ("event_id" DESC) AND comment = 'Write-heavy baseline'`) {
+		t.Fatalf("expected system settings to append with AND, got statement %q", statement)
+	}
+}
+
+func stringPointer(value string) *string {
+	return &value
 }
